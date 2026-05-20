@@ -49,6 +49,54 @@ def finish_sentence(text: str) -> str:
     return text + "."
 
 
+def check_fields(item: dict) -> set:
+    """
+    Zwraca zestaw pól wskazanych do sprawdzenia, np.
+    ["autorzy", "redaktorzy"].
+    """
+    fields = item.get("pola_do_sprawdzenia", [])
+
+    if not isinstance(fields, list):
+        return set()
+
+    return {str(field) for field in fields}
+
+
+def should_mark_field(item: dict, field_name: str) -> bool:
+    """
+    Czy podświetlić konkretne pole.
+    """
+    return (
+        item.get("wymaga_sprawdzenia") is True
+        and field_name in check_fields(item)
+    )
+
+
+def should_mark_record(item: dict) -> bool:
+    """
+    Czy podświetlić cały rekord.
+
+    Zachowanie wstecznie zgodne:
+    jeśli wymaga_sprawdzenia=true, ale nie ma pola pola_do_sprawdzenia
+    albo jest ono puste, podświetla cały rekord.
+    """
+    if item.get("wymaga_sprawdzenia") is not True:
+        return False
+
+    fields = check_fields(item)
+
+    if not fields:
+        return True
+
+    return "rekord" in fields
+
+
+def mark_if_needed(text: str, active: bool) -> str:
+    if text and active:
+        return f"<mark>{text}</mark>"
+    return text
+
+
 def person_surname_initial(person: dict) -> str:
     """
     Format osoby dla autorów i redaktorów:
@@ -217,14 +265,17 @@ def place_year(item: dict) -> str:
 
 def format_monografia(item: dict) -> str:
     parts = [
-        authors(item),
-        italic(item.get("tytul_tomu")),
-        volume(item),
-        format_translator(item),
-        publisher(item),
-        place_year(item),
-        pages(item),
-        url(item)
+        mark_if_needed(authors(item), should_mark_field(item, "autorzy")),
+        mark_if_needed(italic(item.get("tytul_tomu")), should_mark_field(item, "tytul_tomu")),
+        mark_if_needed(volume(item), should_mark_field(item, "tom")),
+        mark_if_needed(format_translator(item), should_mark_field(item, "tlumacz")),
+        mark_if_needed(publisher(item), should_mark_field(item, "wydawnictwo")),
+        mark_if_needed(
+            place_year(item),
+            should_mark_field(item, "miejsce") or should_mark_field(item, "rok")
+        ),
+        mark_if_needed(pages(item), should_mark_field(item, "numery_stron")),
+        mark_if_needed(url(item), should_mark_field(item, "url"))
     ]
 
     return finish_sentence(join_nonempty(parts))
@@ -243,14 +294,22 @@ def format_artykul_w_czasopismie(item: dict) -> str:
     elif rok:
         journal_part = rok
 
-    parts = [
-        authors(item),
-        italic(item.get("tytul_artykulu_rozdzialu")),
+    journal_part = mark_if_needed(
         journal_part,
-        journal_volume(item),
-        number(item),
-        pages(item),
-        url(item)
+        should_mark_field(item, "czasopismo") or should_mark_field(item, "rok")
+    )
+
+    parts = [
+        mark_if_needed(authors(item), should_mark_field(item, "autorzy")),
+        mark_if_needed(
+            italic(item.get("tytul_artykulu_rozdzialu")),
+            should_mark_field(item, "tytul_artykulu_rozdzialu")
+        ),
+        journal_part,
+        mark_if_needed(journal_volume(item), should_mark_field(item, "tom")),
+        mark_if_needed(number(item), should_mark_field(item, "numer")),
+        mark_if_needed(pages(item), should_mark_field(item, "numery_stron")),
+        mark_if_needed(url(item), should_mark_field(item, "url"))
     ]
 
     return finish_sentence(join_nonempty(parts))
@@ -258,22 +317,32 @@ def format_artykul_w_czasopismie(item: dict) -> str:
 
 def format_praca_zbiorowa(item: dict) -> str:
     parts = [
-        format_redactors(item),
-        italic(item.get("tytul_tomu")),
-        volume(item),
-        format_translator(item),
-        publisher(item),
-        place_year(item),
-        pages(item),
-        url(item)
+        mark_if_needed(format_redactors(item), should_mark_field(item, "redaktorzy")),
+        mark_if_needed(italic(item.get("tytul_tomu")), should_mark_field(item, "tytul_tomu")),
+        mark_if_needed(volume(item), should_mark_field(item, "tom")),
+        mark_if_needed(format_translator(item), should_mark_field(item, "tlumacz")),
+        mark_if_needed(publisher(item), should_mark_field(item, "wydawnictwo")),
+        mark_if_needed(
+            place_year(item),
+            should_mark_field(item, "miejsce") or should_mark_field(item, "rok")
+        ),
+        mark_if_needed(pages(item), should_mark_field(item, "numery_stron")),
+        mark_if_needed(url(item), should_mark_field(item, "url"))
     ]
 
     return finish_sentence(join_nonempty(parts))
 
 
 def format_rozdzial_w_pracy_zbiorowej(item: dict) -> str:
-    redactors = format_redactors(item)
-    volume_title = italic(item.get("tytul_tomu"))
+    redactors = mark_if_needed(
+        format_redactors(item),
+        should_mark_field(item, "redaktorzy")
+    )
+
+    volume_title = mark_if_needed(
+        italic(item.get("tytul_tomu")),
+        should_mark_field(item, "tytul_tomu")
+    )
 
     in_part = ""
 
@@ -285,15 +354,21 @@ def format_rozdzial_w_pracy_zbiorowej(item: dict) -> str:
         in_part = f"w: {volume_title}"
 
     parts = [
-        authors(item),
-        italic(item.get("tytul_artykulu_rozdzialu")),
+        mark_if_needed(authors(item), should_mark_field(item, "autorzy")),
+        mark_if_needed(
+            italic(item.get("tytul_artykulu_rozdzialu")),
+            should_mark_field(item, "tytul_artykulu_rozdzialu")
+        ),
         in_part,
-        volume(item),
-        format_translator(item),
-        publisher(item),
-        place_year(item),
-        pages(item),
-        url(item)
+        mark_if_needed(volume(item), should_mark_field(item, "tom")),
+        mark_if_needed(format_translator(item), should_mark_field(item, "tlumacz")),
+        mark_if_needed(publisher(item), should_mark_field(item, "wydawnictwo")),
+        mark_if_needed(
+            place_year(item),
+            should_mark_field(item, "miejsce") or should_mark_field(item, "rok")
+        ),
+        mark_if_needed(pages(item), should_mark_field(item, "numery_stron")),
+        mark_if_needed(url(item), should_mark_field(item, "url"))
     ]
 
     return finish_sentence(join_nonempty(parts))
@@ -301,10 +376,13 @@ def format_rozdzial_w_pracy_zbiorowej(item: dict) -> str:
 
 def format_strona_internetowa(item: dict) -> str:
     parts = [
-        authors(item),
-        italic(item.get("tytul_artykulu_rozdzialu")),
-        esc(item.get("nazwa_portalu")),
-        url(item)
+        mark_if_needed(authors(item), should_mark_field(item, "autorzy")),
+        mark_if_needed(
+            italic(item.get("tytul_artykulu_rozdzialu")),
+            should_mark_field(item, "tytul_artykulu_rozdzialu")
+        ),
+        mark_if_needed(esc(item.get("nazwa_portalu")), should_mark_field(item, "nazwa_portalu")),
+        mark_if_needed(url(item), should_mark_field(item, "url"))
     ]
 
     return finish_sentence(join_nonempty(parts))
@@ -331,7 +409,7 @@ def format_item(item: dict) -> str:
     else:
         result = esc(item.get("raw_record"))
 
-    if item.get("wymaga_sprawdzenia") is True:
+    if should_mark_record(item):
         result = f"<mark>{result}</mark>"
 
     return f"<p>{result}</p>"
@@ -370,9 +448,9 @@ def read_input() -> str:
     """
     Sposoby użycia:
 
-    1. python bib_json_to_html.py input.json output.html
-    2. python bib_json_to_html.py input.json
-    3. type input.json | python bib_json_to_html.py
+    1. python json2html.py input.json output.html
+    2. python json2html.py input.json
+    3. type input.json | python json2html.py
     """
     if len(sys.argv) >= 2:
         input_path = Path(sys.argv[1])
