@@ -32,12 +32,3 @@ jobs:
           git add outputs/
           git commit -m "Dodaj bibliografię z issue #${{ github.event.issue.number }}" || echo "Brak zmian do zapisania"
           git push
-
-      - name: Dodaj komentarz z linkiem
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          ISSUE_NUMBER="${{ github.event.issue.number }}"
-          REPO="${{ github.repository }}"
-          URL="https://github.com/${REPO}/blob/main/outputs/issue-${ISSUE_NUMBER}/bibliografia.docx?raw=true"
-          gh issue comment "$ISSUE_NUMBER" --body "Gotowe. Plik Word: $URL"
