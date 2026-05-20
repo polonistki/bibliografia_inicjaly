@@ -14,6 +14,9 @@ app = FastAPI()
 class InputData(BaseModel):
     data: dict
 
+@app.get("/")
+def root():
+    return {"status": "ok"}
 
 @app.post("/convert")
 def convert(data: InputData):
