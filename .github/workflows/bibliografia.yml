@@ -1,0 +1,43 @@
+name: Bibliografia do DOCX
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  convert:
+    if: startsWith(github.event.issue.title, 'BIBLIOGRAFIA')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Pobierz repozytorium
+        uses: actions/checkout@v4
+
+      - name: Ustaw Pythona
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Utwórz DOCX z treści issue
+        run: python issue_to_docx.py
+
+      - name: Zapisz plik wynikowy w repozytorium
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add outputs/
+          git commit -m "Dodaj bibliografię z issue #${{ github.event.issue.number }}" || echo "Brak zmian do zapisania"
+          git push
+
+      - name: Dodaj komentarz z linkiem
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ISSUE_NUMBER="${{ github.event.issue.number }}"
+          REPO="${{ github.repository }}"
+          URL="https://github.com/${REPO}/blob/main/outputs/issue-${ISSUE_NUMBER}/bibliografia.docx?raw=true"
+          gh issue comment "$ISSUE_NUMBER" --body "Gotowe. Plik Word: $URL"
