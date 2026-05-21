@@ -2,7 +2,7 @@ name: Bibliografia do DOCX
 
 on:
   issues:
-    types: [opened]
+    types: [opened, edited]
 
 permissions:
   contents: read
@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   convert:
-    if: startsWith(github.event.issue.title, 'BIBLIOGRAFIA')
+    if: startsWith(github.event.issue.title, 'BIBLIOGRAFIA') && !contains(github.event.issue.body, 'DOCX_BASE64_BEGIN')
     runs-on: ubuntu-latest
 
     steps:
@@ -30,7 +30,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           ISSUE_NUMBER="${{ github.event.issue.number }}"
+          REPO="${{ github.repository }}"
           DOCX_PATH="outputs/issue-${ISSUE_NUMBER}/bibliografia.docx"
+
+          if [ ! -f "$DOCX_PATH" ]; then
+            echo "Nie znaleziono pliku: $DOCX_PATH"
+            exit 1
+          fi
 
           BASE64_DOCX=$(base64 -w 0 "$DOCX_PATH")
 
@@ -40,4 +46,4 @@ ${BASE64_DOCX}
 DOCX_BASE64_END
 EOF
 
-          gh issue edit "$ISSUE_NUMBER" --body-file issue_body.txt
+          gh issue edit "$ISSUE_NUMBER" --repo "$REPO" --body-file issue_body.txt
