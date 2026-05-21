@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   convert:
-    if: startsWith(github.event.issue.title, 'BIBLIOGRAFIA') && !contains(github.event.issue.body, 'DOCX_BASE64_BEGIN')
+    if: ${{ startsWith(github.event.issue.title, 'BIBLIOGRAFIA') && !contains(github.event.issue.body, 'DOCX_BASE64_BEGIN') }}
     runs-on: ubuntu-latest
 
     steps:
@@ -28,22 +28,16 @@ jobs:
       - name: Wstaw DOCX jako base64 do issue
         env:
           GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
         run: |
-          ISSUE_NUMBER="${{ github.event.issue.number }}"
-          REPO="${{ github.repository }}"
-          DOCX_PATH="outputs/issue-${ISSUE_NUMBER}/bibliografia.docx"
+          export DOCX_PATH="outputs/issue-${ISSUE_NUMBER}/bibliografia.docx"
 
           if [ ! -f "$DOCX_PATH" ]; then
             echo "Nie znaleziono pliku: $DOCX_PATH"
             exit 1
           fi
 
-          BASE64_DOCX=$(base64 -w 0 "$DOCX_PATH")
-
-          cat > issue_body.txt <<EOF
-DOCX_BASE64_BEGIN
-${BASE64_DOCX}
-DOCX_BASE64_END
-EOF
+          python -c "import base64, os; from pathlib import Path; p=Path(os.environ['DOCX_PATH']); b64=base64.b64encode(p.read_bytes()).decode('ascii'); Path('issue_body.txt').write_text('DOCX_BASE64_BEGIN\n' + b64 + '\nDOCX_BASE64_END\n', encoding='utf-8')"
 
           gh issue edit "$ISSUE_NUMBER" --repo "$REPO" --body-file issue_body.txt
