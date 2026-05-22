@@ -7,29 +7,6 @@ from json2html import json_to_html
 from html2docx import html_to_docx
 
 
-DEFAULT_OPTIONS = {
-    "person_name_mode": "initials",
-    "person_order": "surname_first",
-    "include_publisher": True,
-    "include_pages": True,
-}
-
-
-def parse_bool(value: str | None, default: bool = True) -> bool:
-    if value is None:
-        return default
-
-    text = str(value).strip().lower()
-
-    if text in {"true", "tak", "yes", "1", "y", "t", "prawda", "☑", "checked"}:
-        return True
-
-    if text in {"false", "nie", "no", "0", "n", "f", "fałsz", "falsz", "☐", "unchecked"}:
-        return False
-
-    return default
-
-
 def extract_json_from_issue_body(body: str) -> dict:
     """
     Wyciąga JSON z treści issue.
@@ -57,52 +34,34 @@ def extract_options_from_issue_body(body: str) -> dict:
     szyk_osoby=po nazwisku
     uwzglednij_wydawnictwo=true
     uwzglednij_strony=true
+    oznaczenia_brakow=b.a.;b.m.;b.r.
     OPTIONS_END
 
     Brak bloku opcji oznacza ustawienia domyślne.
     """
-    options = dict(DEFAULT_OPTIONS)
+    match = re.search(
+        r"OPTIONS_BEGIN\s*(.*?)\s*OPTIONS_END",
+        body,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
 
-    match = re.search(r"OPTIONS_BEGIN\s*(.*?)\s*OPTIONS_END", body, flags=re.DOTALL | re.IGNORECASE)
     if not match:
-        return options
+        return {}
 
-    raw_options = match.group(1).strip()
-    parsed: dict[str, str] = {}
+    options = {}
+    block = match.group(1)
 
-    for line in raw_options.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
+    for raw_line in block.splitlines():
+        line = raw_line.strip()
+        if not line or "=" not in line:
             continue
 
         key, value = line.split("=", 1)
-        parsed[key.strip()] = value.strip()
+        key = key.strip()
+        value = value.strip()
 
-    forma_osoby = parsed.get("forma_osoby", parsed.get("person_name_mode", ""))
-    forma_osoby_lower = forma_osoby.strip().lower()
-
-    if forma_osoby_lower in {"imiona", "imie", "imię", "names", "name", "full", "full_names"}:
-        options["person_name_mode"] = "names"
-    elif forma_osoby_lower in {"inicjały", "inicjaly", "inicjal", "inicjał", "initials", "initial"}:
-        options["person_name_mode"] = "initials"
-
-    szyk_osoby = parsed.get("szyk_osoby", parsed.get("person_order", ""))
-    szyk_osoby_lower = szyk_osoby.strip().lower()
-
-    if szyk_osoby_lower in {"przed nazwiskiem", "imie nazwisko", "imię nazwisko", "given_first", "name_first", "first_last"}:
-        options["person_order"] = "given_first"
-    elif szyk_osoby_lower in {"po nazwisku", "nazwisko imie", "nazwisko imię", "surname_first", "last_first"}:
-        options["person_order"] = "surname_first"
-
-    options["include_publisher"] = parse_bool(
-        parsed.get("uwzglednij_wydawnictwo", parsed.get("include_publisher")),
-        default=True,
-    )
-
-    options["include_pages"] = parse_bool(
-        parsed.get("uwzglednij_strony", parsed.get("include_pages")),
-        default=True,
-    )
+        if key:
+            options[key] = value
 
     return options
 
@@ -129,7 +88,6 @@ def main():
     html_text = json_to_html(data, full_document=False, options=options)
     html_to_docx(html_text, output_path)
 
-    print(f"Opcje: {options}")
     print(f"Zapisano: {output_path}")
 
 

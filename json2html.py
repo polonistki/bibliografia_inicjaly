@@ -1,89 +1,19 @@
 import json
 import sys
 import html
+import unicodedata
 from pathlib import Path
-from typing import Any
 
 
 DEFAULT_OPTIONS = {
-    "person_name_mode": "initials",       # initials | names
-    "person_order": "surname_first",      # surname_first | given_first
+    "person_name_mode": "initials",      # initials / names
+    "person_order": "surname_first",     # surname_first / given_first
     "include_publisher": True,
     "include_pages": True,
+    "missing_author": False,
+    "missing_place": False,
+    "missing_year": False,
 }
-
-
-def normalize_bool(value: Any, default: bool = True) -> bool:
-    if isinstance(value, bool):
-        return value
-
-    if value is None:
-        return default
-
-    text = str(value).strip().lower()
-
-    if text in {"true", "tak", "yes", "1", "y", "t", "prawda", "☑", "checked"}:
-        return True
-
-    if text in {"false", "nie", "no", "0", "n", "f", "fałsz", "falsz", "☐", "unchecked"}:
-        return False
-
-    return default
-
-
-def normalize_options(options: dict | None = None) -> dict:
-    """
-    Normalizuje opcje przekazane z Power Automate.
-
-    Obsługiwane wartości wejściowe są celowo liberalne, żeby działały zarówno
-    z polskimi nazwami z List, jak i z wartościami technicznymi.
-    """
-    result = dict(DEFAULT_OPTIONS)
-
-    if not isinstance(options, dict):
-        return result
-
-    # Forma osoby: inicjały / imiona
-    name_mode = (
-        options.get("person_name_mode")
-        or options.get("forma_osoby")
-        or options.get("Forma_osoby")
-        or options.get("Forma osoby")
-    )
-
-    if name_mode is not None:
-        text = str(name_mode).strip().lower()
-        if text in {"imiona", "imie", "imię", "names", "name", "full", "full_names"}:
-            result["person_name_mode"] = "names"
-        elif text in {"inicjały", "inicjaly", "inicjal", "inicjał", "initials", "initial"}:
-            result["person_name_mode"] = "initials"
-
-    # Szyk osoby: po nazwisku / przed nazwiskiem
-    order = (
-        options.get("person_order")
-        or options.get("szyk_osoby")
-        or options.get("Szyk_osoby")
-        or options.get("Szyk osoby")
-    )
-
-    if order is not None:
-        text = str(order).strip().lower()
-        if text in {"przed nazwiskiem", "imie nazwisko", "imię nazwisko", "given_first", "name_first", "first_last"}:
-            result["person_order"] = "given_first"
-        elif text in {"po nazwisku", "nazwisko imie", "nazwisko imię", "surname_first", "last_first"}:
-            result["person_order"] = "surname_first"
-
-    result["include_publisher"] = normalize_bool(
-        options.get("include_publisher", options.get("uwzglednij_wydawnictwo", options.get("Uwzględnij wydawnictwo"))),
-        default=True,
-    )
-
-    result["include_pages"] = normalize_bool(
-        options.get("include_pages", options.get("uwzglednij_strony", options.get("Uwzględnij strony"))),
-        default=True,
-    )
-
-    return result
 
 
 def clean_code_fence(text: str) -> str:
@@ -102,6 +32,188 @@ def clean_code_fence(text: str) -> str:
         text = "\n".join(lines).strip()
 
     return text
+
+
+def strip_accents(value: str) -> str:
+    value = unicodedata.normalize("NFKD", value)
+    return "".join(ch for ch in value if not unicodedata.combining(ch))
+
+
+def norm_text(value) -> str:
+    if value is None:
+        return ""
+    return strip_accents(str(value)).strip().lower()
+
+
+def normalize_bool(value, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+
+    if value is None:
+        return default
+
+    text = norm_text(value)
+
+    if text in {"true", "1", "yes", "y", "tak", "t", "on", "checked", "zaznaczone"}:
+        return True
+
+    if text in {"false", "0", "no", "n", "nie", "off", "unchecked", "niezaznaczone", ""}:
+        return False
+
+    return default
+
+
+def option_value(options: dict, *keys, default=None):
+    if not isinstance(options, dict):
+        return default
+
+    lowered = {norm_text(key).replace(" ", "_"): value for key, value in options.items()}
+
+    for key in keys:
+        normalized_key = norm_text(key).replace(" ", "_")
+        if normalized_key in lowered:
+            return lowered[normalized_key]
+
+    return default
+
+
+def selected_missing_markers(value) -> set:
+    """
+    Obsługuje różne formaty, które mogą przyjść z Power Automate dla wielokrotnego wyboru:
+    - b.a.;b.m.;b.r.
+    - b.a., b.m., b.r.
+    - [{"Value":"b.a."},{"Value":"b.m."}]
+    - tekst techniczny zawierający wartości.
+    """
+    if value is None:
+        return set()
+
+    if isinstance(value, list):
+        combined_parts = []
+        for item in value:
+            if isinstance(item, dict):
+                combined_parts.append(str(item.get("Value") or item.get("value") or item))
+            else:
+                combined_parts.append(str(item))
+        value = ";".join(combined_parts)
+
+    if isinstance(value, dict):
+        value = str(value.get("Value") or value.get("value") or value)
+
+    text = norm_text(value)
+    text = text.replace("\\u002e", ".")
+
+    result = set()
+
+    if "b.a" in text or "brak autora" in text or "brak autor" in text or "bez autora" in text:
+        result.add("author")
+
+    if "b.m" in text or "brak miejsca" in text or "bez miejsca" in text:
+        result.add("place")
+
+    if "b.r" in text or "brak roku" in text or "bez roku" in text:
+        result.add("year")
+
+    return result
+
+
+def normalize_options(options: dict | None = None) -> dict:
+    result = dict(DEFAULT_OPTIONS)
+    options = options or {}
+
+    # Forma osoby: inicjały / imiona
+    name_mode = option_value(
+        options,
+        "person_name_mode",
+        "forma_osoby",
+        "Forma osoby",
+        "Inicjały czy pełne imiona",
+        "Inicjaly czy pelne imiona",
+        default=None,
+    )
+    if name_mode is not None:
+        text = norm_text(name_mode)
+        if text in {"imiona", "imie", "imie i nazwisko", "names", "name", "full", "full_names", "pelne imiona", "pełne imiona"}:
+            result["person_name_mode"] = "names"
+        elif text in {"inicjaly", "inicjały", "inicjal", "initials", "initial"}:
+            result["person_name_mode"] = "initials"
+
+    # Szyk osoby: przed nazwiskiem / po nazwisku
+    order = option_value(
+        options,
+        "person_order",
+        "szyk_osoby",
+        "Szyk osoby",
+        "Przed nazwiskiem czy po nim",
+        default=None,
+    )
+    if order is not None:
+        text = norm_text(order)
+        if text in {"przed nazwiskiem", "imie nazwisko", "imię nazwisko", "given_first", "name_first", "first_last"}:
+            result["person_order"] = "given_first"
+        elif text in {"po nazwisku", "nazwisko imie", "nazwisko imię", "surname_first", "last_first"}:
+            result["person_order"] = "surname_first"
+
+    result["include_publisher"] = normalize_bool(
+        option_value(
+            options,
+            "include_publisher",
+            "uwzglednij_wydawnictwo",
+            "Uwzględnij wydawnictwo",
+            "Czy uwzględnić wydawnictwo",
+            default=None,
+        ),
+        default=True,
+    )
+
+    result["include_pages"] = normalize_bool(
+        option_value(
+            options,
+            "include_pages",
+            "uwzglednij_strony",
+            "Uwzględnij strony",
+            "Czy uwzględnić numery stron",
+            default=None,
+        ),
+        default=True,
+    )
+
+    missing_markers = selected_missing_markers(
+        option_value(
+            options,
+            "missing_markers",
+            "oznaczenia_brakow",
+            "oznaczenia_braków",
+            "Oznaczenia braków",
+            "Oznacz braki",
+            "Braki",
+            "Braki bibliograficzne",
+            default=None,
+        )
+    )
+
+    if "author" in missing_markers:
+        result["missing_author"] = True
+    if "place" in missing_markers:
+        result["missing_place"] = True
+    if "year" in missing_markers:
+        result["missing_year"] = True
+
+    # Dodatkowe osobne flagi, gdyby kiedyś wygodniej było zrobić trzy checkboxy.
+    result["missing_author"] = normalize_bool(
+        option_value(options, "missing_author", "brak_autora", "Brak autora", default=None),
+        default=result["missing_author"],
+    )
+    result["missing_place"] = normalize_bool(
+        option_value(options, "missing_place", "brak_miejsca", "Brak miejsca", default=None),
+        default=result["missing_place"],
+    )
+    result["missing_year"] = normalize_bool(
+        option_value(options, "missing_year", "brak_roku", "Brak roku", default=None),
+        default=result["missing_year"],
+    )
+
+    return result
 
 
 def esc(value) -> str:
@@ -179,58 +291,74 @@ def mark_if_needed(text: str, active: bool) -> str:
     return text
 
 
-def preferred_given_part(person: dict, options: dict) -> str:
+def missing_author_marker(options: dict) -> str:
+    return "(b.a.)" if options.get("missing_author") else ""
+
+
+def person_display_name(person: dict, options: dict, natural_order: bool = False) -> str:
     """
-    Zwraca imię albo inicjał według ustawienia.
-    Jeśli wybrano imiona, ale imienia brak, używa inicjału.
-    Jeśli wybrano inicjały, ale inicjału brak, używa imienia.
-    """
-    imie = esc(person.get("imie"))
-    inicjal = esc(person.get("inicjal"))
+    Format osoby zgodny z opcjami.
 
-    if options.get("person_name_mode") == "names":
-        return imie or inicjal
+    options["person_name_mode"]:
+    - initials -> inicjał, np. J.
+    - names    -> imię, a jeśli imienia brak, inicjał
 
-    return inicjal or imie
+    options["person_order"]:
+    - surname_first -> Kowalski J. / Kowalski Jan
+    - given_first   -> J. Kowalski / Jan Kowalski
 
-
-def person_formatted(person: dict, options: dict, natural_order: bool = False) -> str:
-    """
-    Formatuje osobę według ustawień.
-
-    natural_order=True wymusza szyk: Imię/Inicjał Nazwisko.
-    Używane dla tłumacza oraz redaktorów po „w:”.
+    natural_order=True wymusza szyk J. Kowalski / Jan Kowalski, ale nadal respektuje
+    wybór imię/inicjał. Używane dla tłumacza i redaktora po "w:".
     """
     if not isinstance(person, dict):
         return ""
 
     nazwisko = esc(person.get("nazwisko"))
-    given = preferred_given_part(person, options)
+    inicjal = esc(person.get("inicjal"))
+    imie = esc(person.get("imie"))
+
+    if options.get("person_name_mode") == "names":
+        given = imie or inicjal
+    else:
+        given = inicjal or imie
 
     if natural_order:
         if given and nazwisko:
             return f"{given} {nazwisko}"
-        return given or nazwisko
+        if nazwisko:
+            return nazwisko
+        if given:
+            return given
+        return ""
 
-    order = options.get("person_order")
-
-    if order == "given_first":
+    if options.get("person_order") == "given_first":
         if given and nazwisko:
             return f"{given} {nazwisko}"
-        return given or nazwisko
+        if nazwisko:
+            return nazwisko
+        if given:
+            return given
+        return ""
 
-    # Domyślnie: po nazwisku, np. Kowalski J. / Kowalski Jan
     if nazwisko and given:
         return f"{nazwisko} {given}"
 
-    return nazwisko or given
+    if nazwisko:
+        return nazwisko
+
+    if given:
+        return given
+
+    return ""
 
 
-def format_people(people, options: dict, i_inni: bool = False, natural_order: bool = False) -> str:
+def format_people(people, i_inni: bool = False, options: dict | None = None, natural_order: bool = False) -> str:
+    options = options or DEFAULT_OPTIONS
+
     if not isinstance(people, list):
         return ""
 
-    formatted = [person_formatted(person, options, natural_order=natural_order) for person in people]
+    formatted = [person_display_name(person, options, natural_order=natural_order) for person in people]
     formatted = [person for person in formatted if person]
 
     if not formatted:
@@ -245,18 +373,24 @@ def format_people(people, options: dict, i_inni: bool = False, natural_order: bo
 
 
 def authors(item: dict, options: dict) -> str:
-    return format_people(
+    result = format_people(
         item.get("autorzy", []),
-        options,
         item.get("autorzy_i_inni", False),
+        options=options,
+        natural_order=False,
     )
+
+    if not result:
+        return missing_author_marker(options)
+
+    return result
 
 
 def format_redactors(item: dict, options: dict, natural_order: bool = False) -> str:
     redaktorzy = format_people(
         item.get("redaktorzy", []),
-        options,
         item.get("redaktorzy_i_inni", False),
+        options=options,
         natural_order=natural_order,
     )
 
@@ -280,7 +414,7 @@ def format_translator(item: dict, options: dict) -> str:
     if not isinstance(tlumacz, dict):
         return ""
 
-    person = person_formatted(tlumacz, options, natural_order=True)
+    person = person_display_name(tlumacz, options, natural_order=True)
 
     if not person:
         return ""
@@ -322,9 +456,15 @@ def url(item: dict) -> str:
     return esc(item.get("url"))
 
 
-def place_year(item: dict) -> str:
+def place_year(item: dict, options: dict) -> str:
     miejsce = esc(item.get("miejsce"))
     rok = esc(item.get("rok"))
+
+    if not miejsce and options.get("missing_place"):
+        miejsce = "(b.m.)"
+
+    if not rok and options.get("missing_year"):
+        rok = "(b.r.)"
 
     if miejsce and rok:
         return f"{miejsce} {rok}"
@@ -346,11 +486,11 @@ def format_monografia(item: dict, options: dict) -> str:
         mark_if_needed(format_translator(item, options), should_mark_field(item, "tlumacz")),
         mark_if_needed(publisher(item, options), should_mark_field(item, "wydawnictwo")),
         mark_if_needed(
-            place_year(item),
-            should_mark_field(item, "miejsce") or should_mark_field(item, "rok"),
+            place_year(item, options),
+            should_mark_field(item, "miejsce") or should_mark_field(item, "rok")
         ),
         mark_if_needed(pages(item, options), should_mark_field(item, "numery_stron")),
-        mark_if_needed(url(item), should_mark_field(item, "url")),
+        mark_if_needed(url(item), should_mark_field(item, "url"))
     ]
 
     return finish_sentence(join_nonempty(parts))
@@ -359,6 +499,9 @@ def format_monografia(item: dict, options: dict) -> str:
 def format_artykul_w_czasopismie(item: dict, options: dict) -> str:
     czasopismo = esc(item.get("czasopismo"))
     rok = esc(item.get("rok"))
+
+    if not rok and options.get("missing_year"):
+        rok = "(b.r.)"
 
     journal_part = ""
 
@@ -371,53 +514,58 @@ def format_artykul_w_czasopismie(item: dict, options: dict) -> str:
 
     journal_part = mark_if_needed(
         journal_part,
-        should_mark_field(item, "czasopismo") or should_mark_field(item, "rok"),
+        should_mark_field(item, "czasopismo") or should_mark_field(item, "rok")
     )
 
     parts = [
         mark_if_needed(authors(item, options), should_mark_field(item, "autorzy")),
         mark_if_needed(
             italic(item.get("tytul_artykulu_rozdzialu")),
-            should_mark_field(item, "tytul_artykulu_rozdzialu"),
+            should_mark_field(item, "tytul_artykulu_rozdzialu")
         ),
         journal_part,
         mark_if_needed(journal_volume(item), should_mark_field(item, "tom")),
         mark_if_needed(number(item), should_mark_field(item, "numer")),
         mark_if_needed(pages(item, options), should_mark_field(item, "numery_stron")),
-        mark_if_needed(url(item), should_mark_field(item, "url")),
+        mark_if_needed(url(item), should_mark_field(item, "url"))
     ]
 
     return finish_sentence(join_nonempty(parts))
 
 
 def format_praca_zbiorowa(item: dict, options: dict) -> str:
+    redactors = format_redactors(item, options, natural_order=False)
+
+    # Przy pracy zbiorowej brak autora nie jest automatycznie sygnalizowany,
+    # jeśli są redaktorzy. Jeśli nie ma ani autorów, ani redaktorów, można dodać (b.a.).
+    responsible = redactors or missing_author_marker(options)
+
     parts = [
-        mark_if_needed(format_redactors(item, options), should_mark_field(item, "redaktorzy")),
+        mark_if_needed(responsible, should_mark_field(item, "redaktorzy") or should_mark_field(item, "autorzy")),
         mark_if_needed(italic(item.get("tytul_tomu")), should_mark_field(item, "tytul_tomu")),
         mark_if_needed(volume(item), should_mark_field(item, "tom")),
         mark_if_needed(format_translator(item, options), should_mark_field(item, "tlumacz")),
         mark_if_needed(publisher(item, options), should_mark_field(item, "wydawnictwo")),
         mark_if_needed(
-            place_year(item),
-            should_mark_field(item, "miejsce") or should_mark_field(item, "rok"),
+            place_year(item, options),
+            should_mark_field(item, "miejsce") or should_mark_field(item, "rok")
         ),
         mark_if_needed(pages(item, options), should_mark_field(item, "numery_stron")),
-        mark_if_needed(url(item), should_mark_field(item, "url")),
+        mark_if_needed(url(item), should_mark_field(item, "url"))
     ]
 
     return finish_sentence(join_nonempty(parts))
 
 
 def format_rozdzial_w_pracy_zbiorowej(item: dict, options: dict) -> str:
-    # Po „w:” redaktor ma mieć zawsze szyk naturalny, niezależnie od globalnego szyku osoby.
     redactors = mark_if_needed(
         format_redactors(item, options, natural_order=True),
-        should_mark_field(item, "redaktorzy"),
+        should_mark_field(item, "redaktorzy")
     )
 
     volume_title = mark_if_needed(
         italic(item.get("tytul_tomu")),
-        should_mark_field(item, "tytul_tomu"),
+        should_mark_field(item, "tytul_tomu")
     )
 
     in_part = ""
@@ -433,18 +581,18 @@ def format_rozdzial_w_pracy_zbiorowej(item: dict, options: dict) -> str:
         mark_if_needed(authors(item, options), should_mark_field(item, "autorzy")),
         mark_if_needed(
             italic(item.get("tytul_artykulu_rozdzialu")),
-            should_mark_field(item, "tytul_artykulu_rozdzialu"),
+            should_mark_field(item, "tytul_artykulu_rozdzialu")
         ),
         in_part,
         mark_if_needed(volume(item), should_mark_field(item, "tom")),
         mark_if_needed(format_translator(item, options), should_mark_field(item, "tlumacz")),
         mark_if_needed(publisher(item, options), should_mark_field(item, "wydawnictwo")),
         mark_if_needed(
-            place_year(item),
-            should_mark_field(item, "miejsce") or should_mark_field(item, "rok"),
+            place_year(item, options),
+            should_mark_field(item, "miejsce") or should_mark_field(item, "rok")
         ),
         mark_if_needed(pages(item, options), should_mark_field(item, "numery_stron")),
-        mark_if_needed(url(item), should_mark_field(item, "url")),
+        mark_if_needed(url(item), should_mark_field(item, "url"))
     ]
 
     return finish_sentence(join_nonempty(parts))
@@ -455,10 +603,10 @@ def format_strona_internetowa(item: dict, options: dict) -> str:
         mark_if_needed(authors(item, options), should_mark_field(item, "autorzy")),
         mark_if_needed(
             italic(item.get("tytul_artykulu_rozdzialu")),
-            should_mark_field(item, "tytul_artykulu_rozdzialu"),
+            should_mark_field(item, "tytul_artykulu_rozdzialu")
         ),
         mark_if_needed(esc(item.get("nazwa_portalu")), should_mark_field(item, "nazwa_portalu")),
-        mark_if_needed(url(item), should_mark_field(item, "url")),
+        mark_if_needed(url(item), should_mark_field(item, "url"))
     ]
 
     return finish_sentence(join_nonempty(parts))
